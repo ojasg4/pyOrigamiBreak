@@ -2370,6 +2370,7 @@ class DefaultArgs(argparse.Namespace):
     permute   = False  # Permute sequence
     writeall  = False  # Write all results
     csv       = False  # Export results in csv format
+    strand    = False  # NEW default does not generate strand-level interactive visualizations
 
 def parse_args_from_shell():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -2391,6 +2392,7 @@ def parse_args_from_shell():
     parser.add_argument("-sort",      "--sort",      action='store_true', help="Sort oligos for stepwise optimization.")
     parser.add_argument("-writeall",  "--writeall",  action='store_true', help="Write all results")
     parser.add_argument("-csv",       "--csv",       action='store_true', help="Export results in csv format")
+    parser.add_argument("-strand", "--strand", action='store_true', help="Generate strand-level interactive visualizations")  # NEW
     args = parser.parse_args()
 
     # Check if the required arguments are passed to the code
@@ -2443,7 +2445,8 @@ def run(is_notebook_session, args=None):
                  'permute': args.permute,
                  'writeall': args.writeall,
                  'csv': args.csv,
-                 'sort': args.sort}
+                 'sort': args.sort,
+                 'strand': args.strand, } #NEW
 
 
     # Set random seed in order to get the same results with the same set of parameters
@@ -2531,6 +2534,19 @@ def run(is_notebook_session, args=None):
         # Confirm scaffold input length matches design
         new_origami.validate()
 
+        # NEW following block references external script to create strand-level visualizations
+        if args.strand:
+            try:
+                from strand_visualization import create_strand_visualizations
+                strand_viz_paths = create_strand_visualizations(new_autobreak, override=(new_autobreak.output_directory, new_autobreak.input_filename))
+                print(f"Generated strand visualizations:")
+                print(f"  - Data: {strand_viz_paths['strand_data_file']}")
+                print(f"  - SVG: {strand_viz_paths['strand_svg_path']}")
+                print(f"  - Interactive: {strand_viz_paths['interactive_html_path']}")
+            except Exception as e:
+                print(f"Error generating strand visualizations: {e}")
+
+
         # Run the permutation protocol
         new_autobreak.permute_scaffold_sequence_readonly(npermute)
 
@@ -2555,6 +2571,18 @@ def run(is_notebook_session, args=None):
 
         if is_notebook_session:
             print("Please be patient... This next step may take 5 minutes or longer to refresh during peak Colab demand.")
+
+        # NEW following block references external script to create strand-level visualizations
+        if args.strand:
+            try:
+                from strand_visualization import create_strand_visualizations
+                strand_viz_paths = create_strand_visualizations(new_autobreak, override=(new_autobreak.output_directory, new_autobreak.input_filename))
+                print(f"Generated strand visualizations:")
+                print(f"  - Data: {strand_viz_paths['strand_data_file']}")
+                print(f"  - SVG: {strand_viz_paths['strand_svg_path']}")
+                print(f"  - Interactive: {strand_viz_paths['interactive_html_path']}")
+            except Exception as e:
+                print(f"Error generating strand visualizations: {e}")
 
         # Cluster staples
         new_origami.cluster_oligo_groups()
@@ -2621,6 +2649,18 @@ def run(is_notebook_session, args=None):
 
     # Compose Cadnano schematic and Results plots using svgutils
     new_autobreak.create_summary_figure()
+
+    # NEW following block references external script to create strand-level visualizations
+    if args.strand:
+        try:
+            from strand_visualization import create_strand_visualizations
+            strand_viz_paths = create_strand_visualizations(new_autobreak, override=None)
+            print(f"Generated strand visualizations:")
+            print(f"  - Data: {strand_viz_paths['strand_data_file']}")
+            print(f"  - SVG: {strand_viz_paths['strand_svg_path']}")
+            print(f"  - Interactive: {strand_viz_paths['interactive_html_path']}")
+        except Exception as e:
+            print(f"Error generating strand visualizations: {e}")
 
     # Print output
     new_autobreak.first_run_message()
