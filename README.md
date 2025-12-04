@@ -55,6 +55,20 @@ We use a pyproject.toml-based [build process](https://pip.pypa.io/en/stable/refe
 * `python3 -m build`  creates dist/pyOrigamiBreak-x.y.z.tar.gz and pyOrigamiBreak-x.y.z-py3-none-any.whl
 * `python3 -m twine upload dist/pyOrigamiBreak-x.y.z`
 
+**New Additions**
+
+* Run with --strand to show strand interactive heatmap and sequence-level thermodynamics
+* Features before and after for side by side comparison
+* New script generate_overrides generate sequence overrides to optimize problematic DNA strands. Currently only in verbose mode for debugging
+*  Basic usage - optimize strands with Tf < 45°C (default)
+*  python generate_overrides.py data/design_strand_data.xlsx  
+*  Stricter Tf threshold
+*  python generate_overrides.py data/design_strand_data.xlsx --tf-threshold 50 
+*  Also consider binding energy
+*  python generate_overrides.py data/design_strand_data.xlsx --use-dg --dg-threshold -6.0 
+*  Specify output file and limit overrides
+*  python generate_overrides.py data/design_strand_data.xlsx -o custom_overrides.txt --max-overrides 50
+
 ## License
 
 This version of pyOrigamiBreak is available under the MIT License.
