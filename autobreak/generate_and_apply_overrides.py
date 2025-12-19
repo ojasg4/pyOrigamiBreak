@@ -1,19 +1,15 @@
 """
-generate_sequence_overrides.py
-
-Generate sequence overrides to optimize problematic DNA strands based on
+Generate sequence overrides to optimize DNA strands based on
 thermodynamic analysis, write them in a format compatible with the
 override-application script, and optionally apply the overrides to
 produce a full corrected scaffold sequence.
 
 Outputs:
 
-1) overrides file (machine-readable):
+1) overrides file:
    HelixID[Idx][Direction]: OptimizedSequence
    e.g.  41[109][fwd]: GTT
-
-2) annotated overrides file (human-readable + same override lines)
-
+2) annotated overrides file
 3) OPTIONAL: full corrected scaffold sequence .txt if cadnano design,
    original sequence, and output path are provided.
 """
@@ -28,25 +24,16 @@ import re
 import cadnano
 from cadnano.document import Document
 
-
-# ----------------------------------------------------------------------
-# Helper functions for applying overrides (same logic as first script)
-# ----------------------------------------------------------------------
+# Helper functions for applying overrides
 
 def parse_override_input(file_name):
     """Parses a text file containing strand data into a dictionary.
 
-    Expected line format (one per override):
-
-        vh_num[idx][direction]: SEQUENCE
-
-    where:
-        - vh_num: integer helix / virtual helix ID
-        - idx: integer base index within that helix
-        - direction: 'fwd' or 'rev'
-        - SEQUENCE: DNA sequence (A/T/C/G, spaces allowed)
-
-    Comment lines starting with '#' are ignored.
+    Expected line format: vh_num[idx][direction]: SEQUENCE
+    - vh_num: integer helix / virtual helix ID
+    - idx: integer base index within that helix
+    - direction: 'fwd' or 'rev'
+    - SEQUENCE: DNA sequence (A/T/C/G, spaces allowed)
 
     Returns:
         dict: keys = (vh_num, idx, is_fwd), values = sequence (no spaces).
@@ -54,7 +41,6 @@ def parse_override_input(file_name):
     override_data = {}
     with open(file_name, 'r') as file:
         for line in file:
-            # Example: 12[189][fwd]: AGATC GACGCT  GAA AGCGTC GATCT
             match = re.match(
                 r'(\d+)\[(\d+)\]\[(fwd|rev)\]:[\s\u2014]+([ATCG\s]+)',
                 line
@@ -68,27 +54,43 @@ def parse_override_input(file_name):
     return override_data
 
 
-def get_base_length_from_start(part, vh_num, is_forward, idx):
-    """
-    Given a cadnano Part, find the specified base (vh_num, strand direction, idx)
-    and calculate its distance from the start of its oligo (1-based).
-
-    Returns:
-        int or None: 1-based position of this base along the scaffold/oligo,
-                     or None if no strand is found.
-    """
-    strand = part.getStrand(is_forward, vh_num, idx)
-    if strand is None:
-        print(f"No strand found at ({vh_num}, {is_forward}, {idx})")
+def get_base_length_from_start(part, vh_num, is_forward_ignored, idx):
+    # 1. Find the Scaffold (the long oligo)
+    s_fwd = part.getStrand(True, vh_num, idx)
+    s_rev = part.getStrand(False, vh_num, idx)
+    
+    target_strand = None
+    for s in [s_fwd, s_rev]:
+        if s is not None and s.oligo().length() > 500:
+            target_strand = s
+            break
+            
+    if target_strand is None:
         return None
 
-    length = 0
-    for s in strand.oligo().strand5p().generator3pStrand():
-        if s == strand:
-            length += idx - s.idx5Prime() + 1
-            break
-        length += s.totalLength()
-    return length
+    # 2. Calculate linear position
+    current_pos = 0
+    # Walk 5' to 3' along the scaffold oligo
+    for s in target_strand.oligo().strand5p().generator3pStrand():
+        if s == target_strand:
+            # Determine low/high for the API call
+            low, high = (s.idx5Prime(), idx) if idx > s.idx5Prime() else (idx, s.idx5Prime())
+            
+            # Lattice distance (number of bases without mods)
+            lattice_dist = abs(idx - s.idx5Prime())
+            
+            # Structural adjustment (Your identified method)
+            # Returns: (Insertions in range) - (Skips in range)
+            structural_adj = s.insertionLengthBetweenIdxs(low, high)
+            
+            # The +1 is critical: it converts "distance between" to "count of"
+            return current_pos + lattice_dist + structural_adj + 1
+        
+        # totalLength() is the standard Cadnano way to get (Lattice + Inserts - Skips)
+        current_pos += s.totalLength()
+        
+    return None
+
 
 
 def apply_sequence_overrides(input_cadnano, input_sequence, input_overrides, output_sequence):
@@ -117,9 +119,11 @@ def apply_sequence_overrides(input_cadnano, input_sequence, input_overrides, out
     # Apply overrides to the original sequence
     modified_sequence = list(original_sequence)
     for (vh_num, idx, is_forward), override_seq in overrides.items():
-        start_idx = get_base_length_from_start(part, vh_num, is_forward, idx)
-        if start_idx is None:
-            continue
+        start_pos = get_base_length_from_start(part, vh_num, is_forward, idx)
+        if start_pos is not None:
+            start_idx = start_pos + 2
+
+        print(f"Override: Helix {vh_num}[{idx}]{'fwd' if is_forward else 'rev'} -> scaffold position {start_idx}, sequence: {override_seq}")
 
         start_idx0 = start_idx - 1  # convert to 0-based index
         end_idx0 = start_idx0 + len(override_seq)
@@ -128,11 +132,14 @@ def apply_sequence_overrides(input_cadnano, input_sequence, input_overrides, out
     # Save modified sequence
     with open(output_sequence, "w") as f:
         f.write("".join(modified_sequence))
+    
+    print(f"Applied {len(overrides)} overrides to scaffold sequence")
 
+def calculate_complement(seq):
+        """Calculate the Watson-Crick complement of a sequence."""
+        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', ' ': ''}
+        return ''.join(complement.get(b, b) for b in seq.upper())
 
-# ----------------------------------------------------------------------
-# Optimizer class (unchanged logic, new write_overrides_file behavior)
-# ----------------------------------------------------------------------
 
 class SequenceOptimizer:
     """
@@ -226,34 +233,32 @@ class SequenceOptimizer:
 
         return ''.join(seq)
 
-    def calculate_complement(self, seq):
-        complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(complement.get(b, b) for b in seq.upper())
-
     def generate_overrides(self, problematic_strands, target_gc=0.55, max_overrides=100):
         overrides = []
 
         for _, row in problematic_strands.head(max_overrides).iterrows():
             helix_id = row['HelixID']
-            start_idx = min(row['StartIdx'], row['EndIdx'])
-            end_idx = max(row['StartIdx'], row['EndIdx'])
+            start_idx = row['StartIdx']
+            end_idx = row['EndIdx']
             original_seq = row['Sequence']
             direction = row['Direction']
 
+            original_seq = row['Sequence']
             optimized_seq = self.generate_gc_optimized_sequence(original_seq, target_gc)
 
             if optimized_seq != original_seq:
+                scaffold_override_seq = calculate_complement(optimized_seq)
                 overrides.append({
                     'HelixID': int(helix_id),
                     'StartIdx': int(start_idx),
                     'EndIdx': int(end_idx),
                     'Direction': direction,
                     'OriginalSeq': original_seq,
-                    'OptimizedSeq': optimized_seq,
+                    'OptimizedSeq': scaffold_override_seq,
                     'OriginalTf': float(row['Tf']),
                     'OriginalProbFold': float(row['ProbFold']),
                     'OriginalGC': sum(1 for b in original_seq if b in 'GC') / len(original_seq),
-                    'OptimizedGC': sum(1 for b in optimized_seq if b in 'GC') / len(optimized_seq),
+                    'OptimizedGC': sum(1 for b in scaffold_override_seq if b in 'GC') / len(scaffold_override_seq),
                     'Length': int(row['Length'])
                 })
 
@@ -275,6 +280,10 @@ class SequenceOptimizer:
         Write overrides to:
         1) machine-readable overrides file (self.output_path)
         2) annotated overrides file '<basename>_annotated.txt'
+        
+        IMPORTANT: For the override index, we should NOT use the strand boundary
+        (StartIdx/EndIdx) because that often results in the beginning of a staple
+        oligo (offset=0). Instead, use a middle position within the strand.
         """
         overrides_path = self.output_path
         annotated_path = (
@@ -289,14 +298,21 @@ class SequenceOptimizer:
             f.write("#\n")
             f.write("# Format: HelixID[Idx][Direction]: OptimizedSequence\n")
             f.write("# Direction: fwd = forward strand, rev = reverse strand\n")
+            f.write("# Idx is a position within the strand (not necessarily the boundary)\n")
             f.write("#\n")
             f.write(f"# Total overrides: {len(overrides)}\n")
             f.write("#\n\n")
 
             for override in overrides:
                 helix = override['HelixID']
-                idx = override['StartIdx']
                 direction = self._normalize_direction(override['Direction'])
+                
+                # Use a middle position within the strand range
+                # This avoids using strand boundaries which are often at oligo starts
+                start = min(override['StartIdx'], override['EndIdx'])
+                end = max(override['StartIdx'], override['EndIdx'])
+                idx = (start + end) // 2  # Use the middle position
+                
                 seq = override['OptimizedSeq']
                 f.write(f"{helix}[{idx}][{direction}]: {seq}\n")
 
@@ -313,13 +329,21 @@ class SequenceOptimizer:
 
             for override in overrides:
                 helix = override['HelixID']
-                idx = override['StartIdx']
                 direction = self._normalize_direction(override['Direction'])
+                
+                # Use middle position
+                start = min(override['StartIdx'], override['EndIdx'])
+                end = max(override['StartIdx'], override['EndIdx'])
+                idx = (start + end) // 2
+                
                 seq = override['OptimizedSeq']
 
                 f.write(
                     f"# Helix {helix}: {override['StartIdx']}-{override['EndIdx']} "
                     f"({direction}, {override['Length']} bp)\n"
+                )
+                f.write(
+                    f"# Override position: {idx} (middle of strand)\n"
                 )
                 f.write(
                     f"# Original: Tf={override['OriginalTf']:.1f}, "
@@ -341,9 +365,7 @@ class SequenceOptimizer:
             print("\nNo overrides generated.")
             return
 
-        print("\n" + "="*80)
         print("OPTIMIZATION SUMMARY")
-        print("="*80)
 
         avg_original_tf = np.mean([o['OriginalTf'] for o in overrides])
         avg_original_prob = np.mean([o['OriginalProbFold'] for o in overrides])
@@ -382,14 +404,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage - generate overrides (Tf < 45°C), no application
+  # Basic usage - generate overrides (Tf < 45), no application
   python generate_sequence_overrides.py data/design_strand_data.xlsx
 
   # Generate overrides and apply them to produce a corrected scaffold
   python generate_sequence_overrides.py data/design_strand_data.xlsx \
-      --cadnano dbp.q1.json \
-      --sequence 2_scaffold_3364.txt \
-      --output-sequence corrected_scaffold.txt
+      --cadnano design.json \
+      --sequence original_scaffold.txt \
+      --output-sequence optimized_scaffold.txt
         """
     )
 
@@ -398,7 +420,7 @@ Examples:
     parser.add_argument('-o', '--output', type=str, default=None,
                         help='Output path for overrides file (default: auto-generate)')
     parser.add_argument('--tf-threshold', type=float, default=45.0,
-                        help='Minimum acceptable Tf in Celsius (default: 45.0)')
+                        help='Minimum acceptable Tf (default: 45.0)')
     parser.add_argument('--use-dg', action='store_true',
                         help='Also filter by dG threshold (default: off, use only Tf)')
     parser.add_argument('--dg-threshold', type=float, default=-5.0,
@@ -408,7 +430,7 @@ Examples:
     parser.add_argument('--max-overrides', type=int, default=100,
                         help='Maximum number of overrides to generate (default: 100)')
 
-    # NEW: optional arguments to directly apply overrides
+    # Optional arguments to directly apply overrides
     parser.add_argument('--cadnano', type=str,
                         help='Path to cadnano JSON design file (optional; needed to apply overrides)')
     parser.add_argument('--sequence', type=str,
@@ -426,9 +448,7 @@ Examples:
         print("Error: target-gc must be between 0.0 and 1.0")
         sys.exit(1)
 
-    print("="*80)
     print("DNA ORIGAMI SEQUENCE OPTIMIZATION")
-    print("="*80)
 
     optimizer = SequenceOptimizer(args.strand_data, args.output)
 
@@ -453,25 +473,25 @@ Examples:
         print("\nNo sequence changes needed - all sequences already optimal.")
         return
 
-    # 1) write overrides + annotated version
+    # 1) Write overrides files
     optimizer.write_overrides_file(overrides)
 
-    # 2) summary report
+    # 2) Generate summary report
     optimizer.generate_summary_report(overrides)
 
-    # 3) optionally apply overrides to produce full corrected sequence
+    # 3) Optionally apply overrides to produce full corrected sequence
     if args.cadnano or args.sequence or args.output_sequence:
         if not (args.cadnano and args.sequence and args.output_sequence):
             print("\nWARNING: To apply overrides and produce a corrected scaffold,")
             print("you must provide --cadnano, --sequence, and --output-sequence together.")
         else:
-            overrides_path = optimizer.output_path  # machine-readable overrides file
+            overrides_path = optimizer.output_path
             for path_str, label in [
                 (args.cadnano, "cadnano design"),
                 (args.sequence, "original sequence"),
-                (overrides_path, "overrides file"),
+                (str(overrides_path), "overrides file"),
             ]:
-                p = Path(path_str) if label != "overrides file" else overrides_path
+                p = Path(path_str)
                 if not p.exists():
                     raise FileNotFoundError(f"{label} not found: {p}")
 
@@ -482,10 +502,6 @@ Examples:
                 args.output_sequence
             )
             print(f"\nFull corrected scaffold sequence written to: {args.output_sequence}")
-
-    print("\n" + "="*80)
-    print("DONE")
-    print("="*80)
 
 
 if __name__ == "__main__":
